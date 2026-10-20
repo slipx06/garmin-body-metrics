@@ -1,28 +1,58 @@
 """Manual body composition entry for Garmin Connect.
 
-Run:  python app.py   then open http://127.0.0.1:5000
+Run:  python app.py   (opens the app in your browser)
 """
 
 import hashlib
 import json
+import os
 import secrets
 import shutil
+import sys
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import requests
 from flask import Flask, flash, redirect, render_template_string, request, url_for
 from garminconnect import Garmin
+
+__version__ = "1.1.0"
 
 TOKEN_DIR = Path.home() / ".garminconnect"
 PROFILE_DIR = TOKEN_DIR / "profiles"
 PROFILES_FILE = TOKEN_DIR / "profiles.json"
+LOG_FILE = TOKEN_DIR / "body-metrics.log"
 LB_PER_KG = 2.20462
+
+REPO = "slipx06/garmin-body-metrics"
+RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
+PORTS = range(5000, 5011)
+APP_ID = "body-metrics"  # returned by /ping so a second launch can find us
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 
 # Local app: keep logged-in clients and any pending MFA login in memory.
-state = {"apis": {}, "active": None, "mfa_api": None, "mfa_state": None}
+state = {"apis": {}, "active": None, "mfa_api": None, "mfa_state": None, "update": None}
+
+
+def version_tuple(v):
+    try:
+        return tuple(int(p) for p in v.lstrip("v").split("."))
+    except ValueError:
+        return ()
+
+
+def check_for_update():
+    """Remember the newest release if it's newer than this version."""
+    try:
+        r = requests.get(f"https://api.github.com/repos/{REPO}/releases/latest", timeout=10)
+        tag = r.json().get("tag_name", "") if r.ok else ""
+        if version_tuple(tag) > version_tuple(__version__):
+            state["update"] = tag.lstrip("v")
+    except Exception:
+        pass
 
 
 def load_profiles():
@@ -117,6 +147,8 @@ PAGE = """
   .msg { padding:10px 14px; border-radius:6px; margin-bottom:16px; }
   .msg.ok { background:var(--ok); color:var(--okText); }
   .msg.error { background:var(--err); color:var(--errText); }
+  .msg.update { background:var(--accentSoft); border:1px solid var(--accent); }
+  .msg.update a { color:var(--accent); font-weight:600; }
   .row { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
   h2 { font-size:16px; margin:0 0 14px; }
   .hint { font-size:12px; color:var(--muted); margin-top:4px; }
@@ -137,8 +169,20 @@ PAGE = """
 </head>
 <body>
 <main>
-  <h1>Body Metrics</h1>
-  <p class="sub">Send smart-scale-style measurements to Garmin Connect.</p>
+  <div class="row">
+    <div>
+      <h1>Body Metrics</h1>
+      <p class="sub">Send smart-scale-style measurements to Garmin Connect.</p>
+    </div>
+    <form method="post" action="{{ url_for('quit') }}"><button class="link">Close app</button></form>
+  </div>
+
+  {% if update %}
+  <div class="msg update">
+    Version {{ update }} is available (you have {{ version }}).
+    <a href="{{ releases_url }}" target="_blank" rel="noopener">Download it</a>
+  </div>
+  {% endif %}
 
   {% if profiles %}
   <div class="tabs">
@@ -260,8 +304,30 @@ def render(page, **kw):
     active = state["active"]
     return render_template_string(
         PAGE, page=page, profiles=profiles, active=active, profile=profiles.get(active),
-        token_dir=TOKEN_DIR, lb_per_kg=LB_PER_KG, **kw,
+        token_dir=TOKEN_DIR, lb_per_kg=LB_PER_KG, version=__version__,
+        update=state["update"], releases_url=RELEASES_URL, **kw,
     )
+
+
+CLOSED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Body Metrics</title>
+<style>body{margin:0;font:15px/1.5 system-ui,"Segoe UI",sans-serif;background:#f6f7f9;color:#1c1f24}
+@media (prefers-color-scheme: dark){body{background:#121417;color:#e8eaed}}
+main{max-width:720px;margin:0 auto;padding:48px 16px}</style></head>
+<body><main><h1>Body Metrics has closed</h1><p>You can close this tab.
+Open the app again from the Start menu or desktop shortcut.</p></main></body></html>"""
+
+
+@app.get("/ping")
+def ping():
+    return APP_ID
+
+
+@app.post("/quit")
+def quit():
+    # Respond first, then exit so the browser shows the closed page.
+    threading.Timer(0.5, os._exit, [0]).start()
+    return CLOSED_PAGE
 
 
 def fmt(value, scale=1.0):
@@ -397,19 +463,68 @@ def submit():
     return redirect(url_for("index"))
 
 
-if __name__ == "__main__":
+def find_port():
+    """Return (port, already_running): our running instance, or the first free port."""
     import socket
-    import threading
+
+    free = None
+    for port in PORTS:
+        with socket.socket() as s:
+            in_use = s.connect_ex(("127.0.0.1", port)) == 0
+        if not in_use:
+            free = free or port
+            continue
+        try:
+            if requests.get(f"http://127.0.0.1:{port}/ping", timeout=2).text == APP_ID:
+                return port, True
+        except requests.RequestException:
+            pass
+    return free, False
+
+
+def self_test():
+    """Exit 0 if the bundled libraries load; used by the build to catch a bad package."""
+    import zoneinfo
+
+    import ua_generator
+    from curl_cffi import requests as curl_requests
+
+    curl_requests.Session().close()  # loads curl_cffi's compiled library
+    ua_generator.generate()
+    zoneinfo.ZoneInfo("Europe/London")  # needs bundled tzdata on Windows
+    page = app.test_client().get("/ping")
+    sys.exit(0 if page.status_code == 200 else 1)
+
+
+def main():
+    import logging
     import webbrowser
 
-    URL = "http://127.0.0.1:5000"
+    if "--self-test" in sys.argv:
+        self_test()
+
+    if getattr(sys, "frozen", False):
+        # The packaged app has no console; send output and errors to a log file.
+        TOKEN_DIR.mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = open(LOG_FILE, "a", buffering=1, encoding="utf-8")
+        logging.basicConfig(stream=sys.stderr, level=logging.INFO,
+                            format="%(asctime)s %(levelname)s %(message)s")
+
+    port, already_running = find_port()
+    if port is None:
+        print(f"No free port between {PORTS.start} and {PORTS.stop - 1}.")
+        sys.exit(1)
+    url = f"http://127.0.0.1:{port}"
     # If it's already running (shortcut double-clicked twice), just open the page.
-    with socket.socket() as s:
-        already_running = s.connect_ex(("127.0.0.1", 5000)) == 0
     if already_running:
-        webbrowser.open(URL)
-    else:
-        migrate_single_login()
-        print(f"Body Metrics is running at {URL}. Close this window to stop it.")
-        threading.Timer(1.0, webbrowser.open, [URL]).start()
-        app.run(host="127.0.0.1", port=5000)
+        webbrowser.open(url)
+        return
+    migrate_single_login()
+    threading.Thread(target=check_for_update, daemon=True).start()
+    print(f"Body Metrics {__version__} is running at {url}. Use 'Close app' on the page to stop it.")
+    threading.Timer(1.0, webbrowser.open, [url]).start()
+    app.run(host="127.0.0.1", port=port)
+
+
+if __name__ == "__main__":
+    main()

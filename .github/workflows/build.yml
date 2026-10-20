@@ -1,0 +1,63 @@
+name: Build Windows installer
+
+# Tag a version (git tag v1.1.0 && git push --tags) to build and publish a
+# release. Pull requests and "Run workflow" on the Actions tab build a test
+# copy without publishing; download it from the run's Artifacts section.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          version=$(python -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('app.py').read())[1])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match __version__ $version in app.py"
+            exit 1
+          fi
+
+      - name: Build app
+        run: pyinstaller --noconfirm packaging/body_metrics.spec
+
+      - name: Check the bundled libraries load
+        shell: bash
+        run: '"dist/Body Metrics/Body Metrics.exe" --self-test'
+
+      - name: Build installer
+        run: |
+          choco install innosetup -y --no-progress
+          iscc /DAppVersion=${{ steps.version.outputs.version }} packaging\installer.iss
+
+      - name: Upload test build
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: BodyMetrics-Setup-${{ steps.version.outputs.version }}
+          path: dist/BodyMetrics-Setup-*.exe
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release create "$GITHUB_REF_NAME" dist/BodyMetrics-Setup-*.exe --title "Body Metrics $GITHUB_REF_NAME" --generate-notes
