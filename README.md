@@ -20,6 +20,16 @@ python app.py
 
 It opens http://127.0.0.1:5000 in your browser. Close the command window to stop it.
 
+If the app is already running, starting it again just opens another browser tab. To load code changes, close the command window first.
+
+## Desktop shortcut
+
+Double-click `Create Shortcut.bat` once. It puts a **Body Metrics** shortcut on your desktop that starts the app with its command window minimised.
+
+To make it by hand instead: right-click `Body Metrics.bat`, choose **Show more options → Send to → Desktop (create shortcut)**, then rename the shortcut and, in its **Properties**, set **Run** to **Minimized**.
+
+If you move this folder, run `Create Shortcut.bat` again so the shortcut points to the new location.
+
 ## Features
 
 - Several people can each add their own Garmin account and switch between them. The page clearly shows whose account you're entering for.
