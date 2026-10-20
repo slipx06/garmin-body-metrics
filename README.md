@@ -13,7 +13,7 @@ Each measurement is uploaded the same way a smart scale does it, so the values s
 
 You don't need Python or anything else installed.
 
-To stop the app, click **Close app** at the top of the page. To uninstall it, use **Settings → Apps → Installed apps**.
+To stop the app, click **Close app** at the top of the page. If you just close the browser tab, the app closes itself about three minutes later. To uninstall it, use **Settings → Apps → Installed apps**.
 
 ## Using it
 

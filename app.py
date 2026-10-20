@@ -10,6 +10,7 @@ import secrets
 import shutil
 import sys
 import threading
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -29,12 +30,18 @@ REPO = "slipx06/garmin-body-metrics"
 RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
 PORTS = range(5000, 5011)
 APP_ID = "body-metrics"  # returned by /ping so a second launch can find us
+# Open pages check in every HEARTBEAT seconds; with none for IDLE_TIMEOUT
+# seconds the app closes itself. Browsers can slow timers in background tabs
+# to once a minute, so the timeout leaves room for that.
+HEARTBEAT = 20
+IDLE_TIMEOUT = 180
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 
 # Local app: keep logged-in clients and any pending MFA login in memory.
-state = {"apis": {}, "active": None, "mfa_api": None, "mfa_state": None, "update": None}
+state = {"apis": {}, "active": None, "mfa_api": None, "mfa_state": None, "update": None,
+         "last_seen": time.monotonic()}
 
 
 def version_tuple(v):
@@ -293,6 +300,20 @@ PAGE = """
     sync();
   </script>
   {% endif %}
+
+  <div class="msg error" id="gone" hidden>
+    Body Metrics has closed. Open it again from the Start menu or desktop shortcut.
+  </div>
+  <script>
+    // Tell the app this page is still open; it closes itself when no page is.
+    function heartbeat() {
+      fetch("{{ url_for('heartbeat') }}", { method: "POST" })
+        .then(r => { document.getElementById("gone").hidden = r.ok; })
+        .catch(() => { document.getElementById("gone").hidden = false; });
+    }
+    setInterval(heartbeat, {{ heartbeat * 1000 }});
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) heartbeat(); });
+  </script>
 </main>
 </body>
 </html>
@@ -305,7 +326,7 @@ def render(page, **kw):
     return render_template_string(
         PAGE, page=page, profiles=profiles, active=active, profile=profiles.get(active),
         token_dir=TOKEN_DIR, lb_per_kg=LB_PER_KG, version=__version__,
-        update=state["update"], releases_url=RELEASES_URL, **kw,
+        update=state["update"], releases_url=RELEASES_URL, heartbeat=HEARTBEAT, **kw,
     )
 
 
@@ -316,6 +337,35 @@ CLOSED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 main{max-width:720px;margin:0 auto;padding:48px 16px}</style></head>
 <body><main><h1>Body Metrics has closed</h1><p>You can close this tab.
 Open the app again from the Start menu or desktop shortcut.</p></main></body></html>"""
+
+
+@app.before_request
+def mark_seen():
+    state["last_seen"] = time.monotonic()
+
+
+@app.post("/heartbeat")
+def heartbeat():
+    return "", 204
+
+
+def idle_watchdog():
+    """Exit once no page has been open for IDLE_TIMEOUT seconds."""
+    last_tick = time.monotonic()
+    while True:
+        time.sleep(10)
+        now = time.monotonic()
+        if now - last_tick > 60:
+            # The computer was asleep. Give open tabs time to check in again
+            # rather than closing the moment it wakes.
+            state["last_seen"] = now
+        last_tick = now
+        if now - state["last_seen"] > IDLE_TIMEOUT:
+            try:
+                print("No open pages; closing.")
+            finally:
+                # Exit even if output can't be written (e.g. a closed pipe).
+                os._exit(0)
 
 
 @app.get("/ping")
@@ -521,6 +571,7 @@ def main():
         return
     migrate_single_login()
     threading.Thread(target=check_for_update, daemon=True).start()
+    threading.Thread(target=idle_watchdog, daemon=True).start()
     print(f"Body Metrics {__version__} is running at {url}. Use 'Close app' on the page to stop it.")
     threading.Timer(1.0, webbrowser.open, [url]).start()
     app.run(host="127.0.0.1", port=port)
