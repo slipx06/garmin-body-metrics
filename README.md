@@ -4,6 +4,9 @@ Enter smart-scale-style body composition into Garmin Connect when you don't have
 
 Each measurement is uploaded the same way a smart scale does it, so the values show up on the weight screen in Garmin Connect.
 
+<img width="679" height="933" alt="image" src="https://github.com/user-attachments/assets/a5ff40a9-274a-496c-b5a1-6736d34df3ef" />
+
+
 ## Install (Windows)
 
 1. Go to the [latest release](https://github.com/slipx06/garmin-body-metrics/releases/latest) and download **BodyMetrics-Setup-x.y.z.exe**.
