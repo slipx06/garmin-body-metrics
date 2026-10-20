@@ -9,7 +9,7 @@ powershell -NoProfile -Command ^
   "$s.TargetPath = '%DIR%\Body Metrics.bat';" ^
   "$s.WorkingDirectory = '%DIR%';" ^
   "$s.WindowStyle = 7;" ^
-  "$s.IconLocation = $env:SystemRoot + '\System32\imageres.dll,170';" ^
+  "$s.IconLocation = '%DIR%\icon.ico,0';" ^
   "$s.Description = 'Enter body metrics into Garmin Connect';" ^
   "$s.Save();" ^
   "Write-Host ('Shortcut created: ' + $lnk)"
